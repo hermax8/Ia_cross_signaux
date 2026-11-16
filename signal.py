@@ -155,6 +155,10 @@ def send_telegram(text):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat:
+        manquants = [n for n, v in (("TELEGRAM_BOT_TOKEN", token), ("TELEGRAM_CHAT_ID", chat)) if not v]
+        if os.environ.get("GITHUB_ACTIONS"):
+            # sur GitHub, un secret absent doit faire echouer le lancement (croix rouge)
+            raise RuntimeError("Secret(s) GitHub manquant(s) ou mal nomme(s) : " + ", ".join(manquants))
         print("[pas de secrets Telegram : message non envoyé]\n" + text)
         return
     data = urllib.parse.urlencode({"chat_id": chat, "text": text}).encode()
