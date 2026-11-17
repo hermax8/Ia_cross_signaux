@@ -1,7 +1,15 @@
 # Signaux IA+CROSS V3 sur Telegram
 
-Refait le calcul de l'indicateur TradingView « 3. IA+CROSS V3 » sur les bougies 4h de Binance
-et envoie un message Telegram à chaque signal : VENTE (entrée), ACHAT (sortie), STOP.
+Refait le calcul de l'indicateur TradingView « 3. IA+CROSS V3 » sur les bougies 4h de Binance,
+pour deux stratégies, et envoie un message Telegram à chaque signal :
+
+| Message | Ce qu'il faut faire |
+|---|---|
+| 🔴 IN BTC/TOP10 | Acheter BTC et vendre le panier des 10 alts |
+| 🟢 OUT BTC/TOP10 | Revendre BTC et racheter le panier |
+| 🔴 IN BTC/DOT | Acheter BTC et vendre DOT |
+| 🟢 OUT BTC/DOT | Revendre BTC et racheter DOT |
+| ⛔ OUT … (stop) | Sortie forcée : perte maximale atteinte |
 Tourne tout seul sur GitHub Actions, quelques minutes après chaque clôture de bougie 4h.
 
 ## Installation
@@ -19,7 +27,7 @@ Tourne tout seul sur GitHub Actions, quelques minutes après chaque clôture de 
 
 ## Réglages
 
-En haut de `signal.py` : liste des cryptos, seuils du Z-score, filtre de tendance, stop.
+Dans `signal.py`, bloc `STRATEGIES` : cryptos, seuils du Z-score, filtre de tendance, stop, pour chaque stratégie.
 Ils doivent rester identiques à ceux de l'indicateur TradingView.
 
 ## Limites

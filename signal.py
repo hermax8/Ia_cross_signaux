@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""IA+CROSS V3 - signaux Telegram hors TradingView.
+"""IA+CROSS - signaux Telegram hors TradingView.
 
 Refait le calcul de l'indicateur TradingView "3. IA+CROSS V3" sur les bougies
-4h de Binance et envoie un message Telegram a chaque signal :
-  VENTE (entree short du ratio alts/BTC), ACHAT (sortie), STOP.
+4h de Binance, pour deux strategies, et envoie un message Telegram simple :
+
+  IN  BTC/TOP10 : acheter BTC, vendre le panier de 10 alts
+  OUT BTC/TOP10 : cloturer (revendre BTC, racheter le panier)
+  IN  BTC/DOT   : acheter BTC, vendre DOT
+  OUT BTC/DOT   : cloturer (revendre BTC, racheter DOT)
 """
 import json
 import math
@@ -12,22 +16,37 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
-# ---------------- Reglages (identiques a l'indicateur V3) ----------------
-BASES = ["DOTUSDT", "ATOMUSDT", "XLMUSDT", "UNIUSDT", "CRVUSDT",
-         "STXUSDT", "MANAUSDT", "SHIBUSDT", "FLOKIUSDT", "BONKUSDT"]
-QUOTE = "BTCUSDT"
 INTERVAL_MIN = 240        # bougies 4h
+QUOTE = "BTCUSDT"
 # Données de marché publiques de Binance (sans compte ni clé)
 API = "https://data-api.binance.vision/api/v3/klines"
-Z_LEN = 20
-OUTER_UPPER = 2.0
-INNER_UPPER = 1.2
-OUTER_LOWER = -2.5
-INNER_LOWER = -1.7
-TREND_LEN = 200
-STOP_PCT = 12.0
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
+
+# ---------------- Strategies (identiques aux reglages TradingView) ----------------
+STRATEGIES = [
+    {
+        "name": "BTC/TOP10",
+        "bases": ["DOTUSDT", "ATOMUSDT", "XLMUSDT", "UNIUSDT", "CRVUSDT",
+                  "STXUSDT", "MANAUSDT", "SHIBUSDT", "FLOKIUSDT", "BONKUSDT"],
+        "z_len": 20,
+        "outer_upper": 2.0, "inner_upper": 1.2,
+        "outer_lower": -2.5, "inner_lower": -1.7,
+        "trend_len": 200,     # 0 = pas de filtre de tendance
+        "stop_pct": 12.0,
+    },
+    {
+        "name": "BTC/DOT",
+        "bases": ["DOTUSDT"],
+        "z_len": 20,
+        "outer_upper": 2.0, "inner_upper": 2.0,
+        "outer_lower": -3.0, "inner_lower": -3.0,
+        "trend_len": 0,
+        "stop_pct": 20.0,
+    },
+]
 
 
 def fetch_closes(pair):
@@ -48,107 +67,115 @@ def fetch_closes(pair):
     raise RuntimeError(f"Binance {pair}: {last_err}")
 
 
-def compute(base_closes, quote_closes):
-    """Rejoue la logique V3. Renvoie la liste des bougies avec ratio, z, evenements."""
+def compute(strat, closes, quote_closes):
+    """Rejoue la logique de l'indicateur pour une strategie. Renvoie une liste de bougies."""
     times = sorted(quote_closes)
     last = {}
     last_q = None
     idx_b = idx_q = 1.0
     ratio = []
+    bases = strat["bases"]
     for t in times:
-        s, n = 0.0, 0
-        for sym, closes in base_closes.items():
-            c = closes.get(t)
+        s = 0.0
+        for sym in bases:
+            c = closes[sym].get(t)
             if c is not None:
                 if sym in last:
                     s += c / last[sym] - 1
                 last[sym] = c
-            n += 1
         q = quote_closes[t]
         rq = q / last_q - 1 if last_q else 0.0
         last_q = q
-        idx_b *= 1 + (s / n if n else 0.0)
+        idx_b *= 1 + s / len(bases)
         idx_q *= 1 + rq
         ratio.append(idx_b / idx_q)
 
+    z_len, trend_len = strat["z_len"], strat["trend_len"]
     bars = []
     upper_armed = lower_armed = False
-    in_short = False
+    in_pos = False
     entry = None
     prev_z = None
     for i, t in enumerate(times):
         z = trend = None
-        if i >= Z_LEN - 1:
-            w = ratio[i - Z_LEN + 1:i + 1]
-            m = sum(w) / Z_LEN
-            sd = math.sqrt(max(sum((x - m) ** 2 for x in w) / Z_LEN, 0.0))
+        if i >= z_len - 1:
+            w = ratio[i - z_len + 1:i + 1]
+            m = sum(w) / z_len
+            sd = math.sqrt(max(sum((x - m) ** 2 for x in w) / z_len, 0.0))
             z = (ratio[i] - m) / sd if sd > 0 else None
-        if i >= TREND_LEN - 1:
-            trend = sum(ratio[i - TREND_LEN + 1:i + 1]) / TREND_LEN
+        if trend_len and i >= trend_len - 1:
+            trend = sum(ratio[i - trend_len + 1:i + 1]) / trend_len
         event = None
         pnl = None
         if z is not None:
-            if z >= OUTER_UPPER:
+            if z >= strat["outer_upper"]:
                 upper_armed = True
-            if z <= OUTER_LOWER:
+            if z <= strat["outer_lower"]:
                 lower_armed = True
-            cu = prev_z is not None and prev_z >= INNER_UPPER and z < INNER_UPPER
-            co = prev_z is not None and prev_z <= INNER_LOWER and z > INNER_LOWER
+            cu = prev_z is not None and prev_z >= strat["inner_upper"] and z < strat["inner_upper"]
+            co = prev_z is not None and prev_z <= strat["inner_lower"] and z > strat["inner_lower"]
             sell_raw = upper_armed and cu
             if sell_raw:
                 upper_armed = False
             buy_raw = lower_armed and co
             if buy_raw:
                 lower_armed = False
-            if in_short:
+            if in_pos:
                 adverse = (ratio[i] - entry) / entry * 100
-                if buy_raw or adverse >= STOP_PCT:
-                    event = "ACHAT" if buy_raw else "STOP"
+                if buy_raw or adverse >= strat["stop_pct"]:
+                    event = "OUT" if buy_raw else "STOP"
                     pnl = -adverse
-                    in_short = False
+                    in_pos = False
                     entry = None
-            # on attend que la moyenne de tendance existe avant toute entree
-            if event is None and sell_raw and not in_short and trend is not None and ratio[i] < trend:
-                event = "VENTE"
-                in_short = True
+            trend_ok = trend_len == 0 or (trend is not None and ratio[i] < trend)
+            # on attend assez d'historique (200 bougies) avant toute entree
+            if event is None and sell_raw and not in_pos and trend_ok and i >= 200:
+                event = "IN"
+                in_pos = True
                 entry = ratio[i]
         prev_z = z
-        bars.append({"t": t, "ratio": ratio[i], "z": z, "trend": trend,
-                     "event": event, "pnl": pnl, "in_short": in_short, "entry": entry})
+        bars.append({"t": t, "ratio": ratio[i], "z": z, "event": event, "pnl": pnl,
+                     "in_pos": in_pos, "entry": entry})
     return bars
 
 
 def fmt_time(ts):
-    return time.strftime("%d/%m/%Y %H:%M UTC", time.gmtime(ts + INTERVAL_MIN * 60))
+    """Heure de cloture de la bougie, en heure de Paris."""
+    end = datetime.fromtimestamp(ts + INTERVAL_MIN * 60, timezone.utc)
+    try:
+        end = end.astimezone(ZoneInfo("Europe/Paris"))
+    except Exception:  # base de fuseaux absente : on reste en UTC
+        return end.strftime("%d/%m à %Hh%M UTC")
+    return end.strftime("%d/%m à %Hh%M")
 
 
-def message_for(bar):
-    head = {
-        "VENTE": "🔴 VENTE (entrée) — IA+CROSS V3\nShorter le panier d'alts / acheter BTC.",
-        "ACHAT": "🟢 ACHAT (sortie) — IA+CROSS V3\nClôturer la position.",
-        "STOP": "⛔ STOP — IA+CROSS V3\nPerte maximale atteinte : clôturer la position.",
-    }[bar["event"]]
-    lines = [head, f"Bougie 4h clôturée le {fmt_time(bar['t'])}",
-             f"Ratio : {bar['ratio']:.6f}   Z-score : {bar['z']:.2f}"]
-    if bar["pnl"] is not None:
-        lines.append(f"Résultat du trade (hors frais) : {bar['pnl']:+.2f} %")
-    return "\n".join(lines)
+def legs(strat):
+    if len(strat["bases"]) == 1:
+        alt = strat["bases"][0].replace("USDT", "")
+        return f"BTC et vendre {alt}", f"BTC et racheter {alt}"
+    return "BTC et vendre le panier TOP10", "BTC et racheter le panier TOP10"
 
 
-def status_message(bars):
+def message_for(strat, bar):
+    name = strat["name"]
+    sell_alt, buy_alt = legs(strat)
+    when = fmt_time(bar["t"])
+    if bar["event"] == "IN":
+        return f"🔴 IN {name}\nAcheter {sell_alt}.\nSignal du {when}"
+    title = f"🟢 OUT {name}" if bar["event"] == "OUT" else f"⛔ OUT {name} (stop)"
+    return (f"{title}\nRevendre {buy_alt}.\n"
+            f"Résultat : {bar['pnl']:+.1f} % (hors frais)\nSignal du {when}")
+
+
+def status_line(strat, bars):
     b = bars[-1]
-    pos = "position short OUVERTE" if b["in_short"] else "aucune position"
-    lines = ["ℹ️ IA+CROSS V3 — état actuel",
-             f"Dernière bougie 4h clôturée : {fmt_time(b['t'])}",
-             f"Ratio : {b['ratio']:.6f}   Z-score : {b['z']:.2f}",
-             f"Moyenne {TREND_LEN} : {b['trend']:.6f}   État : {pos}"]
-    if b["in_short"]:
-        lines.append(f"Entrée à {b['entry']:.6f} ({(b['entry'] - b['ratio']) / b['entry'] * 100:+.2f} % en cours)")
-    recent = [x for x in bars if x["event"]][-4:]
-    if recent:
-        lines.append("Derniers signaux :")
-        lines += [f"  {fmt_time(x['t'])} — {x['event']}" for x in recent]
-    return "\n".join(lines)
+    if b["in_pos"]:
+        since = next(x for x in reversed(bars) if x["event"] == "IN")
+        gain = (b["entry"] - b["ratio"]) / b["entry"] * 100
+        return f"• {strat['name']} : IN depuis le {fmt_time(since['t'])} ({gain:+.1f} %)"
+    last_out = next((x for x in reversed(bars) if x["event"] in ("OUT", "STOP")), None)
+    tail = f" (dernier OUT le {fmt_time(last_out['t'])})" if last_out else ""
+    return f"• {strat['name']} : OUT, en attente{tail}"
 
 
 def send_telegram(text):
@@ -159,7 +186,7 @@ def send_telegram(text):
         if os.environ.get("GITHUB_ACTIONS"):
             # sur GitHub, un secret absent doit faire echouer le lancement (croix rouge)
             raise RuntimeError("Secret(s) GitHub manquant(s) ou mal nomme(s) : " + ", ".join(manquants))
-        print("[pas de secrets Telegram : message non envoyé]\n" + text)
+        print("[pas de secrets Telegram : message non envoyé]\n" + text + "\n")
         return
     data = urllib.parse.urlencode({"chat_id": chat, "text": text}).encode()
     req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data)
@@ -169,32 +196,45 @@ def send_telegram(text):
 
 def main():
     want_status = "--status" in sys.argv
-    base = {}
-    for sym in BASES:
-        base[sym] = fetch_closes(sym)
+    symbols = sorted({s for st in STRATEGIES for s in st["bases"]})
+    closes = {}
+    for sym in symbols:
+        closes[sym] = fetch_closes(sym)
         time.sleep(0.3)
     quote = fetch_closes(QUOTE)
-    bars = compute(base, quote)
-    if len(bars) < TREND_LEN + Z_LEN or bars[-1]["z"] is None:
-        raise RuntimeError("Historique Binance insuffisant")
 
-    state = {"last_notified": 0}
+    state = {}
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE) as f:
-            state.update(json.load(f))
-    first_run = state["last_notified"] == 0
-    # premier lancement : on ne renvoie pas les anciens signaux
-    since = bars[-1]["t"] - 1 if first_run else state["last_notified"]
-    for b in bars:
-        if b["event"] and b["t"] > since:
-            send_telegram(message_for(b))
-            print("Signal envoyé :", b["event"], fmt_time(b["t"]))
-    if want_status or first_run:
-        send_telegram(status_message(bars))
-    state["last_notified"] = bars[-1]["t"]
+            state = json.load(f)
+    # ancien format (une seule strategie) -> nouveau format par strategie
+    if "last_notified" in state:
+        state = {"BTC/TOP10": state["last_notified"]}
+
+    lines = []
+    new_strategy = False
+    for strat in STRATEGIES:
+        bars = compute(strat, closes, quote)
+        if len(bars) < 250 or bars[-1]["z"] is None:
+            raise RuntimeError(f"Historique Binance insuffisant pour {strat['name']}")
+        name = strat["name"]
+        if name not in state:
+            # strategie nouvelle : on ne renvoie pas les anciens signaux
+            state[name] = bars[-1]["t"]
+            new_strategy = True
+        for b in bars:
+            if b["event"] and b["t"] > state[name]:
+                send_telegram(message_for(strat, b))
+                print("Signal envoyé :", name, b["event"], fmt_time(b["t"]))
+        state[name] = bars[-1]["t"]
+        lines.append(status_line(strat, bars))
+
+    status = "📊 État des signaux\n" + "\n".join(lines)
+    if want_status or new_strategy:
+        send_telegram(status)
     with open(STATE_FILE, "w") as f:
         json.dump(state, f)
-    print(status_message(bars))
+    print(status)
 
 
 if __name__ == "__main__":
