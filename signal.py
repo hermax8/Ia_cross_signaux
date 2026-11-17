@@ -4,6 +4,9 @@
 Refait le calcul de l'indicateur TradingView "3. IA+CROSS V3" sur les bougies
 4h de Binance, pour deux strategies, et envoie un message Telegram simple :
 
+Les resultats sont en % du capital investi, reparti moitie en BTC achete et
+moitie en alts vendues (ex. 100 EUR = 50 EUR de BTC + 50 EUR d'alts).
+
   IN  BTC/TOP10 : acheter BTC, vendre le panier de 10 alts
   OUT BTC/TOP10 : cloturer (revendre BTC, racheter le panier)
   IN  BTC/DOT   : acheter BTC, vendre DOT
@@ -74,6 +77,7 @@ def compute(strat, closes, quote_closes):
     last_q = None
     idx_b = idx_q = 1.0
     ratio = []
+    prices = []   # (prix BTC, derniers prix des alts) a chaque bougie
     bases = strat["bases"]
     for t in times:
         s = 0.0
@@ -89,13 +93,23 @@ def compute(strat, closes, quote_closes):
         idx_b *= 1 + s / len(bases)
         idx_q *= 1 + rq
         ratio.append(idx_b / idx_q)
+        prices.append((q, dict(last)))
 
     z_len, trend_len = strat["z_len"], strat["trend_len"]
     bars = []
     upper_armed = lower_armed = False
     in_pos = False
     entry = None
+    entry_i = None
     prev_z = None
+
+    def real_gain(i):
+        """Gain en % du capital : moitie en BTC achete, moitie en alts vendues."""
+        q0, alts0 = prices[entry_i]
+        q1, alts1 = prices[i]
+        b = q1 / q0 - 1
+        a = sum(alts1[s] / alts0[s] - 1 for s in bases if s in alts0 and s in alts1) / len(bases)
+        return (0.5 * b - 0.5 * a) * 100
     for i, t in enumerate(times):
         z = trend = None
         if i >= z_len - 1:
@@ -124,18 +138,21 @@ def compute(strat, closes, quote_closes):
                 adverse = (ratio[i] - entry) / entry * 100
                 if buy_raw or adverse >= strat["stop_pct"]:
                     event = "OUT" if buy_raw else "STOP"
-                    pnl = -adverse
+                    pnl = real_gain(i)
                     in_pos = False
                     entry = None
+                    entry_i = None
             trend_ok = trend_len == 0 or (trend is not None and ratio[i] < trend)
             # on attend assez d'historique (200 bougies) avant toute entree
             if event is None and sell_raw and not in_pos and trend_ok and i >= 200:
                 event = "IN"
                 in_pos = True
                 entry = ratio[i]
+                entry_i = i
         prev_z = z
         bars.append({"t": t, "ratio": ratio[i], "z": z, "event": event, "pnl": pnl,
-                     "in_pos": in_pos, "entry": entry})
+                     "in_pos": in_pos, "entry": entry,
+                     "gain": real_gain(i) if in_pos else None})
     return bars
 
 
@@ -164,14 +181,14 @@ def message_for(strat, bar):
         return f"🔴 IN {name}\nAcheter {sell_alt}.\nSignal du {when}"
     title = f"🟢 OUT {name}" if bar["event"] == "OUT" else f"⛔ OUT {name} (stop)"
     return (f"{title}\nRevendre {buy_alt}.\n"
-            f"Résultat : {bar['pnl']:+.1f} % (hors frais)\nSignal du {when}")
+            f"Résultat : {bar['pnl']:+.1f} % du capital (hors frais)\nSignal du {when}")
 
 
 def status_line(strat, bars):
     b = bars[-1]
     if b["in_pos"]:
         since = next(x for x in reversed(bars) if x["event"] == "IN")
-        gain = (b["entry"] - b["ratio"]) / b["entry"] * 100
+        gain = b["gain"]
         return f"• {strat['name']} : IN depuis le {fmt_time(since['t'])} ({gain:+.1f} %)"
     last_out = next((x for x in reversed(bars) if x["event"] in ("OUT", "STOP")), None)
     tail = f" (dernier OUT le {fmt_time(last_out['t'])})" if last_out else ""
@@ -229,7 +246,8 @@ def main():
         state[name] = bars[-1]["t"]
         lines.append(status_line(strat, bars))
 
-    status = "📊 État des signaux\n" + "\n".join(lines)
+    status = ("📊 État des signaux\n" + "\n".join(lines)
+              + "\n(% du capital : moitié en BTC acheté, moitié en alts vendues)")
     if want_status or new_strategy:
         send_telegram(status)
     with open(STATE_FILE, "w") as f:
