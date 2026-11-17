@@ -36,3 +36,27 @@ Ils doivent rester identiques à ceux de l'indicateur TradingView.
 - GitHub désactive les planifications d'un dépôt sans activité depuis 60 jours ; le fichier `state.json`
   est mis à jour à chaque nouvelle bougie, ce qui garde le dépôt actif.
 - Le script recalcule tout sur les 1000 dernières bougies 4h (environ 166 jours) fournies par Binance.
+
+## Ordres automatiques sur Kraken Futures
+
+Le bot peut passer lui-même les ordres sur Kraken Futures (contrats perpétuels `PF_…`) à chaque IN / OUT.
+Il ne touche qu'aux positions qu'il a ouvertes : celles ouvertes à la main ne sont jamais fermées par lui.
+
+**Secrets** (*Settings → Secrets and variables → Actions → Secrets*) :
+- `KRAKEN_API_KEY`, `KRAKEN_API_SECRET` : clé API **Futures** de Kraken, sans droit de retrait.
+
+**Variables** (*Settings → Secrets and variables → Actions → Variables*) :
+
+| Variable | Valeurs | Par défaut |
+|---|---|---|
+| `TRADING_MODE` | vide = signaux seulement, `simulation` = ordres affichés sur Telegram sans rien passer, `reel` = vrais ordres | vide |
+| `LEVIER` | 1 à 10 | 1 |
+| `PART_TOP10` / `PART_DOT` | part du compte futures pour chaque stratégie (total ≤ 1) | 0.5 / 0.5 |
+| `CAPITAL_SIMULATION` | capital fictif en $ pour le mode simulation | 1000 |
+
+À chaque IN, la taille est calculée sur la valeur actuelle du compte (les gains sont donc réinvestis) :
+moitié en BTC acheté, moitié en alts vendues à parts égales, multipliée par le levier.
+Un ordre en échec est retenté au passage suivant.
+
+**Tester la connexion** sans passer d'ordre : *Actions → Signaux IA+CROSS V3 → Run workflow*, cocher
+« Tester seulement la connexion Kraken ». Le bot envoie la valeur du compte et les positions ouvertes.

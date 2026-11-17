@@ -12,6 +12,10 @@ on:
         description: "Envoyer aussi un message d'état sur Telegram"
         type: boolean
         default: true
+      test_kraken:
+        description: "Tester seulement la connexion Kraken (solde et positions, aucun ordre)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -32,8 +36,19 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python signal.py ${{ (github.event_name == 'workflow_dispatch' && inputs.status) && '--status' || '' }}
+          KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
+          KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
+          TRADING_MODE: ${{ vars.TRADING_MODE }}
+          LEVIER: ${{ vars.LEVIER }}
+          PART_TOP10: ${{ vars.PART_TOP10 }}
+          PART_DOT: ${{ vars.PART_DOT }}
+          CAPITAL_SIMULATION: ${{ vars.CAPITAL_SIMULATION }}
+        run: >-
+          python signal.py
+          ${{ (github.event_name == 'workflow_dispatch' && inputs.status) && '--status' || '' }}
+          ${{ (github.event_name == 'workflow_dispatch' && inputs.test_kraken) && '--test-kraken' || '' }}
       - name: Mémoriser la dernière bougie traitée
+        if: always()
         run: |
           git config user.name "ia-cross-bot"
           git config user.email "ia-cross-bot@users.noreply.github.com"

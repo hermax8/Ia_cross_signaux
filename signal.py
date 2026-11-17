@@ -19,6 +19,8 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+
+import trading
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -231,6 +233,9 @@ def send_telegram(text):
 
 
 def main():
+    if "--test-kraken" in sys.argv:
+        trading.check(send_telegram)
+        return
     want_status = "--status" in sys.argv
     symbols = sorted({s for st in STRATEGIES for s in st["bases"]})
     closes = {}
@@ -248,6 +253,7 @@ def main():
         state = {"BTC/TOP10": state["last_notified"]}
 
     lines = []
+    changes = {}
     new_strategy = False
     for strat in STRATEGIES:
         bars = compute(strat, closes, quote)
@@ -262,6 +268,7 @@ def main():
             if b["event"] and b["t"] > state[name]:
                 send_telegram(message_for(strat, b))
                 print("Signal envoyé :", name, b["event"], fmt_time(b["t"]))
+                changes[name] = "IN" if b["event"] == "IN" else "OUT"
         state[name] = bars[-1]["t"]
         lines.append(status_line(strat, bars))
 
@@ -269,8 +276,15 @@ def main():
               + "\n(% du capital : moitié en BTC acheté, moitié en alts vendues, hors frais)")
     if want_status or new_strategy:
         send_telegram(status)
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
+    try:
+        trading.handle(state, changes, STRATEGIES, send_telegram)
+    except Exception as e:
+        send_telegram(f"❌ Erreur côté Kraken, aucun ordre de ce passage n'est garanti :\n{e}")
+        raise
+    finally:
+        # on mémorise toujours, même si un ordre a échoué (il sera retenté)
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f)
     print(status)
 
 
