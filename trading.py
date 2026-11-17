@@ -40,10 +40,10 @@ def settings():
         return float(v) if v else default
     mode = (os.environ.get("TRADING_MODE") or "").strip().lower()
     mode = {"réel": "reel", "real": "reel", "live": "reel", "sim": "simulation"}.get(mode, mode)
-    levier = num("LEVIER", 1.0)
+    levier = num("LEVIER", 3.0)
     if not 0 < levier <= MAX_LEVIER:
         raise RuntimeError(f"LEVIER doit être entre 1 et {MAX_LEVIER} (reçu {levier})")
-    parts = {"BTC/TOP10": num("PART_TOP10", 0.5), "BTC/DOT": num("PART_DOT", 0.5)}
+    parts = {"BTC/TOP10": num("PART_TOP10", 0.7), "BTC/DOT": num("PART_DOT", 0.3)}
     if sum(parts.values()) > 1.0001 or min(parts.values()) < 0:
         raise RuntimeError("PART_TOP10 + PART_DOT doit être entre 0 et 1")
     return {"mode": mode if mode in ("simulation", "reel") else "",

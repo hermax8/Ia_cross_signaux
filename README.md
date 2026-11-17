@@ -50,8 +50,8 @@ Il ne touche qu'aux positions qu'il a ouvertes : celles ouvertes à la main ne s
 | Variable | Valeurs | Par défaut |
 |---|---|---|
 | `TRADING_MODE` | vide = signaux seulement, `simulation` = ordres affichés sur Telegram sans rien passer, `reel` = vrais ordres | vide |
-| `LEVIER` | 1 à 10 | 1 |
-| `PART_TOP10` / `PART_DOT` | part du compte futures pour chaque stratégie (total ≤ 1) | 0.5 / 0.5 |
+| `LEVIER` | 1 à 10 | 3 |
+| `PART_TOP10` / `PART_DOT` | part du compte futures pour chaque stratégie (total ≤ 1) | 0.7 / 0.3 |
 | `CAPITAL_SIMULATION` | capital fictif en $ pour le mode simulation | 1000 |
 
 À chaque IN, la taille est calculée sur la valeur actuelle du compte (les gains sont donc réinvestis) :
