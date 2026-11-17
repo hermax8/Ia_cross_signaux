@@ -26,6 +26,8 @@ INTERVAL_MIN = 240        # bougies 4h
 QUOTE = "BTCUSDT"
 # Données de marché publiques de Binance (sans compte ni clé)
 API = "https://data-api.binance.vision/api/v3/klines"
+LEVERAGES = [1, 5, 10]
+LIQUIDATION = -90.0   # perte (en % du capital) a laquelle on considere le compte liquide
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
 
 # ---------------- Strategies (identiques aux reglages TradingView) ----------------
@@ -101,6 +103,7 @@ def compute(strat, closes, quote_closes):
     in_pos = False
     entry = None
     entry_i = None
+    worst = 0.0       # pire perte en cours de trade (x1, en % du capital, sur les clotures)
     prev_z = None
 
     def real_gain(i):
@@ -121,6 +124,7 @@ def compute(strat, closes, quote_closes):
             trend = sum(ratio[i - trend_len + 1:i + 1]) / trend_len
         event = None
         pnl = None
+        trade_worst = None
         if z is not None:
             if z >= strat["outer_upper"]:
                 upper_armed = True
@@ -135,10 +139,12 @@ def compute(strat, closes, quote_closes):
             if buy_raw:
                 lower_armed = False
             if in_pos:
+                worst = min(worst, real_gain(i))
                 adverse = (ratio[i] - entry) / entry * 100
                 if buy_raw or adverse >= strat["stop_pct"]:
                     event = "OUT" if buy_raw else "STOP"
                     pnl = real_gain(i)
+                    trade_worst = worst
                     in_pos = False
                     entry = None
                     entry_i = None
@@ -149,10 +155,12 @@ def compute(strat, closes, quote_closes):
                 in_pos = True
                 entry = ratio[i]
                 entry_i = i
+                worst = 0.0
         prev_z = z
         bars.append({"t": t, "ratio": ratio[i], "z": z, "event": event, "pnl": pnl,
                      "in_pos": in_pos, "entry": entry,
-                     "gain": real_gain(i) if in_pos else None})
+                     "gain": real_gain(i) if in_pos else None,
+                     "worst": trade_worst if event in ("OUT", "STOP") else (worst if in_pos else None)})
     return bars
 
 
@@ -173,6 +181,17 @@ def legs(strat):
     return "BTC et vendre le panier TOP10", "BTC et racheter le panier TOP10"
 
 
+def by_leverage(gain, worst):
+    """'+3.2 % (x1) | +16.0 % (x5) | liquidé (x10)' : levier applique au resultat."""
+    parts = []
+    for lev in LEVERAGES:
+        if worst is not None and lev * worst <= LIQUIDATION:
+            parts.append(f"liquidé (x{lev})")
+        else:
+            parts.append(f"{lev * gain:+.1f} % (x{lev})")
+    return " | ".join(parts)
+
+
 def message_for(strat, bar):
     name = strat["name"]
     sell_alt, buy_alt = legs(strat)
@@ -181,15 +200,15 @@ def message_for(strat, bar):
         return f"🔴 IN {name}\nAcheter {sell_alt}.\nSignal du {when}"
     title = f"🟢 OUT {name}" if bar["event"] == "OUT" else f"⛔ OUT {name} (stop)"
     return (f"{title}\nRevendre {buy_alt}.\n"
-            f"Résultat : {bar['pnl']:+.1f} % du capital (hors frais)\nSignal du {when}")
+            f"Résultat (hors frais) :\n{by_leverage(bar['pnl'], bar['worst'])}\nSignal du {when}")
 
 
 def status_line(strat, bars):
     b = bars[-1]
     if b["in_pos"]:
         since = next(x for x in reversed(bars) if x["event"] == "IN")
-        gain = b["gain"]
-        return f"• {strat['name']} : IN depuis le {fmt_time(since['t'])} ({gain:+.1f} %)"
+        return (f"• {strat['name']} : IN depuis le {fmt_time(since['t'])}\n"
+                f"   {by_leverage(b['gain'], b['worst'])}")
     last_out = next((x for x in reversed(bars) if x["event"] in ("OUT", "STOP")), None)
     tail = f" (dernier OUT le {fmt_time(last_out['t'])})" if last_out else ""
     return f"• {strat['name']} : OUT, en attente{tail}"
@@ -247,7 +266,7 @@ def main():
         lines.append(status_line(strat, bars))
 
     status = ("📊 État des signaux\n" + "\n".join(lines)
-              + "\n(% du capital : moitié en BTC acheté, moitié en alts vendues)")
+              + "\n(% du capital : moitié en BTC acheté, moitié en alts vendues, hors frais)")
     if want_status or new_strategy:
         send_telegram(status)
     with open(STATE_FILE, "w") as f:
