@@ -201,6 +201,14 @@ def handle(state, changes, strategies, send):
     if not cfg["mode"]:
         return
     sim = cfg["mode"] == "simulation"
+    if state.get("mode") != cfg["mode"]:
+        if cfg["mode"] == "reel" and (state.get("positions") or state.get("applied")):
+            # positions fictives de la simulation : on ne les reporte pas sur le vrai compte
+            send("🔁 Passage en réel : les positions de la simulation sont oubliées. "
+                 "Le bot ouvrira ses premiers vrais ordres au prochain signal IN.")
+        if cfg["mode"] == "reel":
+            state["positions"], state["applied"] = {}, {}
+        state["mode"] = cfg["mode"]
     by_name = {s["name"]: s for s in strategies}
     positions = state.setdefault("positions", {})
     applied = state.setdefault("applied", {})
